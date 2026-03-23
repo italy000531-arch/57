@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>大易園早餐 (DOMO) - 專業數位管理系統</title>
+    
+    <!-- 基礎庫載入 (CDN 版，無需安裝) -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- Firebase 11+ SDK -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.4.0/firebase-app.js";
+        import { getFirestore, collection, addDoc, onSnapshot, doc, deleteDoc, updateDoc, Timestamp } from "https://www.gstatic.com/firebasejs/11.4.0/firebase-firestore.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.4.0/firebase-auth.js";
+        
+        window.FirebaseLib = { initializeApp, getFirestore, collection, addDoc, onSnapshot, doc, deleteDoc, updateDoc, Timestamp, getAuth, signInAnonymously, onAuthStateChanged };
+    </script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap');
+        body { font-family: 'Noto Sans TC', sans-serif; -webkit-tap-highlight-color: transparent; background-color: #fdfdfd; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .tab-active { background-color: #fbbf24 !important; color: #1e293b !important; font-weight: 900; box-shadow: 0 4px 12px rgba(251,191,36,0.3); }
+        @keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .menu-item { animation: slideIn 0.3s ease-out forwards; }
+        input[type="checkbox"] { accent-color: #fbbf24; width: 20px; height: 20px; border-radius: 4px; }
+        
+        /* 結帳抽屜動畫 */
+        .drawer-mask { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; opacity: 0; pointer-events: none; transition: opacity 0.3s ease; }
+        .drawer-mask.active { opacity: 1; pointer-events: auto; }
+        .drawer-content { position: fixed; bottom: 0; left: 0; right: 0; background: white; z-index: 110; border-radius: 2.5rem 2.5rem 0 0; transform: translateY(100%); transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1); max-height: 90vh; display: flex; flex-direction: column; }
+        .drawer-content.open { transform: translateY(0); }
+    </style>
+</head>
+<body class="pb-24">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useRef } = React;
+
+        // --- 核心配置 ---
+        const ADMIN_PWD = "8888";
+        const GAS_URL = "https://script.google.com/macros/s/AKfycbxaTmPc-wCyS3XK3QIZPHzjRzK0lPmSYFBlX5yn36gf5JTKTooFzUops2cZvTk_DIAC/exec";
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'dayiyuan-v20-stable';
+
+        // --- 完整菜單數據 ---
+        const MENU_DATA = [
+            { category: "漢堡類", station: "煎台", items: [
+                { name: "豬肉漢堡", price: 35 }, { name: "豬排漢堡", price: 45 }, { name: "香雞漢堡", price: 35 }, { name: "鮪魚漢堡", price: 40 }, { name: "培根豬漢堡", price: 50 },
+                { name: "卡啦雞腿堡", price: 60 }, { name: "西西里雞堡", price: 55 }, { name: "牛肉漢堡", price: 50 }
+            ]},
+            { category: "吐司蛋類", station: "櫃檯", items: [
+                { name: "烤起司蛋吐司", price: 30 }, { name: "烤火腿蛋吐司", price: 30 }, { name: "烤肉鬆蛋吐司", price: 35 }, { name: "烤玉米蛋吐司", price: 40 },
+                { name: "烤豬肉蛋吐司", price: 40 }, { name: "烤豬排蛋吐司", price: 50 }, { name: "烤豬肉總匯", price: 50 }, { name: "烤豬排總匯", price: 60 }
+            ]},
+            { category: "美味蛋餅", station: "煎台", items: [
+                { name: "原味蛋餅", price: 25 }, { name: "火腿蛋餅", price: 30 }, { name: "起司蛋餅", price: 30 }, { name: "玉米蛋餅", price: 40 }, { name: "薯餅蛋餅", price: 40 },
+                { name: "豬排蛋餅", price: 50 }, { name: "九層塔乳酪", price: 40 }
+            ]},
+            { category: "麵點點心", station: "煎台", items: [
+                { name: "黑胡椒麵", price: 55 }, { name: "蘑菇鐵板麵", price: 55 }, { name: "宮保雞丁麵", price: 60 }, { name: "三星蔥餅", price: 45 },
+                { name: "雞塊(5塊)", price: 35 }, { name: "煎餃(8顆)", price: 40 }, { name: "荷包蛋", price: 15 }
+            ]},
+            { category: "厚片法式", station: "櫃檯", items: [
+                { name: "巧克力厚片", price: 35 }, { name: "奶酥厚片", price: 35 }, { name: "花生厚片", price: 35 }, { name: "香蒜厚片", price: 35 },
+                { name: "法式原味", price: 30 }, { name: "法式起司", price: 40 }, { name: "乳酪餅(原)", price: 35 }
+            ]},
+            { category: "冷熱飲品", station: "櫃檯", items: [
+                { name: "紅茶(中)", price: 15 }, { name: "奶茶(中)", price: 20 }, { name: "鮮奶茶(中)", price: 25 }, { name: "拿鐵咖啡", price: 30 }, { name: "玉米濃湯", price: 40 }
+            ]}
+        ];
+
+        // --- 小組件：Lucide 圖示 (React 安全版) ---
+        const Icon = ({ name, className = "w-5 h-5 inline-block", size }) => {
+            const [svg, setSvg] = useState('');
+            useEffect(() => {
+                const update = () => {
+                    if (window.lucide && window.lucide.icons[name]) {
+                        setSvg(window.lucide.icons[name].toSvg({ class: className, width: size, height: size }));
+                    } else { setTimeout(update, 100); }
+                };
+                update();
+            }, [name, className, size]);
+            return <span dangerouslySetInnerHTML={{ __html: svg }} />;
+        };
+
+        function App() {
+            const [user, setUser] = useState(null);
+            const [db, setDb] = useState(null);
+            const [isReady, setIsReady] = useState(false);
+            const [view, setView] = useState('order'); // order, kds, success
+            const [cart, setCart] = useState([]);
+            const [activeCategory, setActiveCategory] = useState(MENU_DATA[0].category);
+            const [addons, setAddons] = useState({}); 
+            const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
+            
+            const [orderType, setOrderType] = useState('內用');
+            const [tableNum, setTableNum] = useState(null);
+            const [nameInput, setNameInput] = useState('');
+            const [paymentType, setPaymentType] = useState('現場付');
+            const [isSubmitting, setIsSubmitting] = useState(false);
+            const [orders, setOrders] = useState([]);
+            const [showPwdModal, setShowPwdModal] = useState(false);
+            const [pwdInput, setPwdInput] = useState('');
+
+            // 1. 初始化連線 (Rule 3)
+            useEffect(() => {
+                const init = async () => {
+                    if (!window.FirebaseLib) { setTimeout(init, 300); return; }
+                    const { initializeApp, getFirestore, getAuth, signInAnonymously, onAuthStateChanged } = window.FirebaseLib;
+                    const app = initializeApp(firebaseConfig);
+                    const auth = getAuth(app);
+                    const firestore = getFirestore(app);
+                    onAuthStateChanged(auth, (u) => {
+                        if (u) { setUser(u); setDb(firestore); setIsReady(true); }
+                    });
+                    await signInAnonymously(auth).catch(e => console.error(e));
+                };
+                init();
+            }, []);
+
+            // 2. 看板實時監聽 (Rule 1)
+            useEffect(() => {
+                if (!db || !user || view !== 'kds') return;
+                const { collection, onSnapshot } = window.FirebaseLib;
+                const ordersRef = collection(db, 'artifacts', appId, 'public', 'data', 'orders');
+                const unsubscribe = onSnapshot(ordersRef, (snapshot) => {
+                    const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+                    setOrders(docs.sort((a,b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)));
+                });
+                return () => unsubscribe();
+            }, [db, user, view]);
+
+            const handleAddToCart = (item) => {
+                const itemAddon = addons[item.name] || { egg: false, cheese: false, pork: false };
+                let extraPrice = 0; let labels = [];
+                if (itemAddon.egg) { extraPrice += 10; labels.push("加蛋"); }
+                if (itemAddon.cheese) { extraPrice += 10; labels.push("加起司"); }
+                if (itemAddon.pork) { extraPrice += 20; labels.push("加排"); }
+                const labelStr = labels.join('+');
+                const cartId = `${item.name}-${labelStr}`;
+                const station = MENU_DATA.find(c => c.category === activeCategory).station;
+
+                setCart(prev => {
+                    const existing = prev.find(i => i.cartId === cartId);
+                    if (existing) return prev.map(i => i.cartId === cartId ? { ...i, qty: i.qty + 1 } : i);
+                    return [...prev, { ...item, price: item.price + extraPrice, extra: labelStr, qty: 1, cartId, station, id: Date.now() }];
+                });
+                setAddons(prev => ({ ...prev, [item.name]: { egg: false, cheese: false, pork: false } }));
+            };
+
+            const submitOrder = async () => {
+                if (!db || !user) return alert("系統連線中...");
+                if (orderType === '內用' && !tableNum) return alert("請選桌號");
+                if (orderType === '外帶' && !nameInput.trim()) return alert("請輸入姓名");
+
+                setIsSubmitting(true);
+                const { collection, addDoc, Timestamp } = window.FirebaseLib;
+                const locationStr = orderType === '內用' ? `${tableNum}桌` : nameInput.trim();
+                const total = cart.reduce((s,i) => s + (i.price * i.qty), 0);
+
+                const payload = {
+                    location: locationStr, type: orderType, payment: paymentType, total, isPaid: false,
+                    items: cart.map(i => ({ name: i.name, extra: i.extra, qty: i.qty, station: i.station, ready: false })),
+                    createdAt: Timestamp.now()
+                };
+
+                try {
+                    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'orders'), payload);
+                    const msg = `🥪 大易園 [${orderType}-${locationStr}]\n總額：$${total}\n${cart.map(i => `- ${i.name}${i.extra ? `(${i.extra})` : ''} x${i.qty}`).join('\n')}`;
+                    const f = new URLSearchParams(); f.append('message', msg);
+                    await fetch(GAS_URL, { method: 'POST', mode: 'no-cors', body: f });
+                    setView('success'); setCart([]); setIsCheckoutOpen(false);
+                } catch (e) { alert("傳送失敗，請截圖告知店員"); } finally { setIsSubmitting(false); }
+            };
+
+            if (!isReady) return (
+                <div className="h-screen flex flex-col items-center justify-center bg-white gap-4">
+                    <div className="w-12 h-12 border-4 border-amber-400 border-t-transparent rounded-full animate-spin"></div>
+                    <p className="font-black text-amber-600 tracking-widest animate-pulse uppercase italic">Domo POS Loading...</p>
+                </div>
+            );
+
+            // --- 後台看板視圖 ---
+            if (view === 'kds') {
+                const { doc, updateDoc, deleteDoc } = window.FirebaseLib;
+                return (
+                    <div className="min-h-screen bg-[#0f172a] text-white p-6 overflow-x-hidden">
+                        <header className="flex justify-between items-center mb-8 border-b border-slate-800 pb-6">
+                            <h1 className="text-3xl font-black text-amber-400 italic">大易園出單看板 (Stable)</h1>
+                            <button onClick={() => setView('order')} className="bg-slate-800 px-6 py-2 rounded-2xl font-bold active:scale-95 transition-all">退出</button>
+                        </header>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-6">
+                            {orders.map(order => (
+                                <div key={order.id} className={`bg-slate-800 border-2 rounded-[2.5rem] flex flex-col shadow-2xl transition-all ${order.isPaid ? 'border-green-500/40 ring-4 ring-green-500/5' : 'border-slate-700'}`}>
+                                    <div className={`p-4 flex justify-between items-center ${order.isPaid ? 'bg-green-900/20' : 'bg-slate-700/50'}`}>
+                                        <span className="bg-amber-400 text-slate-900 px-5 py-1 rounded-full font-black text-xl">{order.location}</span>
+                                        <span className="text-[10px] opacity-40 font-bold tabular-nums">{order.createdAt ? new Date(order.createdAt.seconds * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : ''}</span>
+                                    </div>
+                                    <div className="p-5 flex-1 space-y-5">
+                                        {['煎台', '櫃檯'].map(st => (
+                                            <div key={st}>
+                                                <h4 className={`text-[9px] font-black uppercase mb-2 border-b pb-1 flex items-center gap-1 ${st==='煎台'?'text-orange-400 border-orange-400/20':'text-blue-400 border-blue-400/20'}`}>
+                                                    <Icon name={st==='煎台'?'flame':'cup-soda'} size={12}/> {st}區
+                                                </h4>
+                                                <div className="space-y-2">
+                                                    {order.items.filter(i => i.station === st).map((item, idx) => {
+                                                        const realIdx = order.items.indexOf(item);
+                                                        return (
+                                                            <div key={idx} onClick={() => {
+                                                                const up = [...order.items]; up[realIdx].ready = !up[realIdx].ready;
+                                                                updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'orders', order.id), { items: up });
+                                                            }} className={`flex justify-between items-center p-2 rounded-xl cursor-pointer ${item.ready ? 'opacity-20 grayscale bg-black/10' : 'hover:bg-slate-700'}`}>
+                                                                <span className={`font-black text-lg ${item.ready ? 'line-through opacity-50' : ''}`}>{item.name}{item.extra && <small className="text-amber-500 block text-[9px] leading-none mt-1 italic">★{item.extra}</small>}</span>
+                                                                <span className="text-amber-400 font-black text-2xl">x{item.qty}</span>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="p-4 bg-black/20 flex flex-col gap-3">
+                                        <div className="flex justify-between items-center px-1">
+                                            <span className="text-[10px] font-black text-slate-500">{order.payment} / ${order.total}</span>
+                                            <button onClick={() => updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'orders', order.id), { isPaid: !order.isPaid })} className={`text-[10px] font-black px-4 py-1.5 rounded-full border ${order.isPaid ? 'bg-green-500 text-white' : 'text-slate-500 border-slate-600'}`}>
+                                                {order.isPaid ? "已收現" : "標記收款"}
+                                            </button>
+                                        </div>
+                                        <button onClick={() => { if(confirm("確定出單結案？")) deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'orders', order.id)); }} className="w-full bg-green-600 hover:bg-green-500 py-4 rounded-2xl font-black text-lg shadow-xl active:scale-95 transition-all">確認出單</button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                );
+            }
+
+            // --- 點餐頁面主視圖 ---
+            return (
+                <div className="max-w-md mx-auto min-h-screen bg-slate-50 relative pb-32">
+                    <header className="bg-amber-400 p-6 sticky top-0 z-40 flex justify-between items-center text-slate-900 shadow-sm">
+                        <div><h1 className="text-2xl font-black italic tracking-tighter leading-none">DOMO EAT</h1><p className="text-[10px] font-bold opacity-80 mt-1 uppercase">數位線上點餐系統</p></div>
+                        <button onClick={() => setShowPwdModal(true)} className="p-3 bg-slate-900 text-amber-400 rounded-2xl shadow-xl active:scale-90 transition-transform"><Icon name="lock" size={18}/></button>
+                    </header>
+
+                    {view === 'order' ? (
+                        <>
+                            <nav className="bg-white border-b sticky top-[80px] z-30 shadow-sm overflow-x-auto no-scrollbar py-3 px-4 flex gap-2">
+                                {MENU_DATA.map(cat => (
+                                    <button key={cat.category} onClick={() => setActiveCategory(cat.category)} className={`flex-shrink-0 px-6 py-2 rounded-full text-xs font-black transition-all ${activeCategory === cat.category ? 'tab-active' : 'bg-slate-100 text-slate-400'}`}>{cat.category}</button>
+                                ))}
+                            </nav>
+                            <div className="p-3 grid grid-cols-2 gap-3 relative z-10">
+                                {MENU_DATA.find(c => c.category === activeCategory).items.map((item, idx) => (
+                                    <div key={idx} className="bg-white p-4 rounded-[1.8rem] shadow-sm border border-slate-100 flex flex-col justify-between transition-all active:scale-[0.98] menu-item">
+                                        <div className="mb-2">
+                                            <h3 className="font-black text-slate-800 text-[14px] leading-tight h-10 overflow-hidden line-clamp-2">{item.name}</h3>
+                                            <p className="text-amber-500 font-black text-base mt-1">$${item.price}</p>
+                                        </div>
+                                        <div className="space-y-3">
+                                            <div className="flex flex-col gap-2 p-2 bg-slate-50 rounded-2xl border border-slate-100 text-[10px] font-black text-slate-500">
+                                                {["漢堡類", "吐司蛋類", "美味蛋餅"].includes(activeCategory) && (
+                                                    <>
+                                                        <label className="flex items-center gap-2 cursor-pointer active:text-amber-600"><input type="checkbox" checked={addons[item.name]?.egg || false} onChange={e => setAddons({...addons, [item.name]: {...addons[item.name], egg: e.target.checked}})} /> 加蛋+10</label>
+                                                        <label className="flex items-center gap-2 cursor-pointer active:text-amber-600"><input type="checkbox" checked={addons[item.name]?.cheese || false} onChange={e => setAddons({...addons, [item.name]: {...addons[item.name], cheese: e.target.checked}})} /> 起司+10</label>
+                                                    </>
+                                                )}
+                                                {activeCategory === "麵點點心" && item.name.includes("麵") && (
+                                                    <label className="flex items-center gap-2 cursor-pointer text-orange-600"><input type="checkbox" checked={addons[item.name]?.pork || false} onChange={e => setAddons({...addons, [item.name]: {...addons[item.name], pork: e.target.checked}})} /> 加豬排+20</label>
+                                                )}
+                                            </div>
+                                            <button onClick={() => handleAddToCart(item)} className="w-full bg-amber-400 text-slate-900 py-3 rounded-2xl active:scale-90 shadow-md flex items-center justify-center transition-all"><Icon name="plus" size={20}/></button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </>
+                    ) : (
+                        <div className="h-screen bg-white flex flex-col items-center justify-center p-10 text-center">
+                            <Icon name="check-circle-2" className="text-green-500 mb-6 animate-bounce" size={80}/>
+                            <h2 className="text-4xl font-black text-slate-800 mb-4 tracking-tighter">下單同步成功！</h2>
+                            <p className="text-slate-400 font-bold mb-14 text-lg">資訊已同步到 LINE 與平板看板。<br/>請稍候櫃檯叫號取餐，謝謝。</p>
+                            <button onClick={() => window.location.reload()} className="w-full max-w-xs py-5 bg-slate-900 text-white rounded-[2rem] font-black text-xl shadow-2xl">點下一份</button>
+                        </div>
+                    )}
+
+                    {/* 精簡購物車條 (不擋菜單) */}
+                    {cart.length > 0 && view === 'order' && (
+                        <div className="fixed bottom-6 left-6 right-6 z-[90]">
+                            <div className="bg-white p-4 flex items-center justify-between shadow-[0_15px_50px_rgba(0,0,0,0.3)] border border-slate-100 rounded-[2.5rem] active:scale-95 transition-all cursor-pointer" onClick={() => setIsCheckoutOpen(true)}>
+                                <div className="flex items-center gap-3">
+                                    <div className="bg-amber-400 p-3 rounded-2xl relative shadow-inner"><Icon name="shopping-bag" size={24} className="text-slate-900" /><span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-black w-5 h-5 rounded-full flex items-center justify-center border-2 border-white">{cart.reduce((s,i)=>s+i.qty,0)}</span></div>
+                                    <div><p className="text-3xl font-black text-amber-600 leading-none tabular-nums tracking-tighter">${cart.reduce((s,i)=>s+(i.price*i.qty), 0)}</p><p className="text-[10px] text-slate-400 font-black mt-1 uppercase italic tracking-wider italic">確認單據細節 <Icon name="chevron-up" size={12}/></p></div>
+                                </div>
+                                <button className="bg-slate-900 text-white px-10 py-5 rounded-[2rem] font-black text-sm">結帳</button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* 結帳細節抽屜 */}
+                    <div className={`drawer-mask ${isCheckoutOpen ? 'active' : ''}`} onClick={() => setIsCheckoutOpen(false)}></div>
+                    <div className={`drawer-content ${isCheckoutOpen ? 'open' : ''}`}>
+                        <div className="p-6 border-b flex justify-between items-center bg-white sticky top-0 rounded-t-[2.5rem]">
+                            <h2 className="text-2xl font-black italic tracking-tighter underline decoration-amber-400 decoration-4">訂單明細確認</h2>
+                            <button onClick={() => setIsCheckoutOpen(false)} className="p-3 bg-slate-50 rounded-full text-slate-400"><Icon name="x" size={24}/></button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-6 space-y-8 no-scrollbar pb-32">
+                            <section>
+                                <h3 className="text-xs font-black text-slate-400 mb-4 flex items-center gap-2 italic uppercase tracking-widest">01. 已選購項目</h3>
+                                <div className="space-y-3">
+                                    {cart.map(item => (
+                                        <div key={item.id} className="flex justify-between items-center bg-slate-50 p-4 rounded-3xl border border-slate-100">
+                                            <div className="flex-1"><p className="font-black text-slate-800">{item.name} <span className="text-amber-600 text-[11px] font-bold ml-1">{item.extra && `(${item.extra})`}</span></p><p className="text-[10px] font-bold text-slate-400 mt-1">$${item.price} x {item.qty}</p></div>
+                                            <div className="flex items-center gap-3">
+                                                <div className="flex items-center bg-white rounded-2xl px-1 shadow-sm border border-slate-100">
+                                                    <button onClick={() => setCart(prev => prev.map(i => i.id === item.id ? { ...i, qty: Math.max(0, i.qty - 1) } : i).filter(f => f.qty > 0))} className="p-1.5 text-slate-200"><Icon name="minus-circle" size={18}/></button>
+                                                    <span className="w-8 text-center font-black text-xs tabular-nums">{item.qty}</span>
+                                                    <button onClick={() => setCart(prev => prev.map(i => i.id === item.id ? { ...i, qty: i.qty + 1 } : i))} className="p-1.5 text-amber-500"><Icon name="plus-circle" size={18}/></button>
+                                                </div>
+                                                <button onClick={() => setCart(prev => prev.filter(i => i.id !== item.id))} className="text-red-300 p-1"><Icon name="trash-2" size={20}/></button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </section>
+                            <section>
+                                <h3 className="text-xs font-black text-slate-400 mb-4 italic uppercase tracking-widest">02. 取餐資訊</h3>
+                                <div className="grid grid-cols-2 gap-3 mb-4">
+                                    <button onClick={() => setOrderType('內用')} className={`py-5 rounded-3xl border-2 font-black ${orderType === '內用' ? 'border-amber-400 bg-amber-50 text-slate-900' : 'border-slate-100 text-slate-300'}`}>內用</button>
+                                    <button onClick={() => setOrderType('外帶')} className={`py-5 rounded-3xl border-2 font-black ${orderType === '外帶' ? 'border-amber-400 bg-amber-50 text-slate-900' : 'border-slate-100 text-slate-300'}`}>外帶</button>
+                                </div>
+                                {orderType === '內用' ? (
+                                    <div className="grid grid-cols-5 gap-2">{[1,2,3,4,5].map(n => (<button key={n} onClick={() => setTableNum(n)} className={`py-4 rounded-2xl border-2 font-black text-sm ${tableNum === n ? 'bg-amber-400 border-amber-400 shadow-lg scale-105' : 'bg-slate-50 border-slate-100 text-slate-300'}`}>{n}桌</button>))}</div>
+                                ) : (
+                                    <input placeholder="請輸入姓名" className="w-full p-5 bg-slate-50 rounded-3xl border-2 border-slate-100 outline-none font-black shadow-inner" value={nameInput} onChange={e => setNameInput(e.target.value)} />
+                                )}
+                            </section>
+                            <div className="pt-8 border-t-2 border-dashed border-slate-200 mb-8 text-center">
+                                <p className="text-[11px] font-black text-slate-400 uppercase italic">Grand Total</p>
+                                <h3 className="text-6xl font-black text-slate-900 tracking-tighter tabular-nums leading-none mt-2 mb-8">${cart.reduce((s,i)=>s+(i.price*i.qty), 0)}</h3>
+                                <button disabled={isSubmitting} onClick={submitOrder} className={`w-full py-8 rounded-[2.5rem] font-black text-2xl shadow-xl active:scale-95 flex items-center justify-center gap-4 transition-all ${isSubmitting ? 'bg-slate-300' : 'bg-amber-400 text-slate-900 shadow-amber-200'}`}>
+                                    {isSubmitting ? <Icon name="loader-2" className="animate-spin" size={32}/> : <Icon name="send" size={32} />} 確認發送訂單
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* 管理登入彈窗 */}
+                    {showPwdModal && (
+                        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[100] flex items-center justify-center p-8" onClick={() => setShowPwdModal(false)}>
+                            <div className="bg-white w-full max-w-sm rounded-[4rem] p-12 shadow-2xl text-center" onClick={e => e.stopPropagation()}>
+                                <Icon name="lock" size={40} className="mx-auto mb-8 text-slate-800" />
+                                <h3 className="text-2xl font-black text-slate-800 mb-8 tracking-widest uppercase">後台認證</h3>
+                                <input autoFocus type="password" placeholder="••••" className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-3xl mb-10 font-black text-center text-4xl tracking-[0.5em] shadow-inner outline-none" value={pwdInput} onChange={e => setPwdInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && (pwdInput === ADMIN_PWD ? (setView('kds'), setShowPwdModal(false), setPwdInput('')) : alert('密碼錯誤'))} />
+                                <div className="flex gap-4">
+                                    <button onClick={() => {setShowPwdModal(false); setPwdInput('');}} className="flex-1 py-5 bg-slate-100 rounded-3xl font-black text-slate-400">取消</button>
+                                    <button onClick={() => { if(pwdInput === ADMIN_PWD){ setView('kds'); setShowPwdModal(false); setPwdInput(''); } else alert("密碼錯誤"); }} className="flex-1 py-5 bg-amber-400 rounded-3xl font-black text-slate-900 shadow-xl">驗證</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
